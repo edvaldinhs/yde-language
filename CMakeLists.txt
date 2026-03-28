@@ -9,6 +9,11 @@ set(CMAKE_CXX_STANDARD 17)
 include_directories(${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 
-add_executable(mycompiler source/main.cpp)
+add_executable(ydd
+  src/main.cpp
+  src/parser.cpp
+  src/lexer.cpp
+  src/codeGen.cpp
+)
 
-target_link_libraries(mycompiler LLVM)
+target_link_libraries(ydd LLVM)
