@@ -10,17 +10,38 @@ std::unique_ptr<llvm::IRBuilder<>> TheBuilder;
 std::unique_ptr<llvm::Module> TheModule;
 std::map<std::string, llvm::Value *> NamedValues;
 
+std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+
+llvm::Function *getFunction(std::string Name) {
+  if (auto *F = TheModule->getFunction(Name))
+    return F;
+
+  auto FI = FunctionProtos.find(Name);
+  if (FI != FunctionProtos.end())
+    return FI->second->codegen();
+
+  return nullptr;
+}
+
+static llvm::AllocaInst *CreateEntryBlockAlloca(llvm::Function *TheFunction,
+                                                const std::string &VarName) {
+  llvm::IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
+                         TheFunction->getEntryBlock().begin());
+  return TmpB.CreateAlloca(llvm::Type::getDoubleTy(*TheContext), nullptr,
+                           VarName);
+}
+
 llvm::Value *NumberExprAST::codegen() {
   return llvm::ConstantFP::get(*TheContext, llvm::APFloat(Val));
 }
 
 llvm::Value *VariableExprAST::codegen() {
   llvm::Value *V = NamedValues[Name];
-  if (!V) {
-    fprintf(stderr, "Unknown variable name: %s\n", Name.c_str());
+  if (!V)
     return nullptr;
-  }
-  return V;
+
+  return TheBuilder->CreateLoad(llvm::Type::getDoubleTy(*TheContext), V,
+                                Name.c_str());
 }
 
 llvm::Value *BinaryExprAST::codegen() {
@@ -30,6 +51,22 @@ llvm::Value *BinaryExprAST::codegen() {
     return nullptr;
 
   switch (Op) {
+  case '=': {
+    VariableExprAST *LHSE = static_cast<VariableExprAST *>(LHS.get());
+    if (!LHSE)
+      return nullptr;
+
+    llvm::Value *Val = RHS->codegen();
+    if (!Val)
+      return nullptr;
+
+    llvm::Value *Variable = NamedValues[LHSE->getName()];
+    if (!Variable)
+      return nullptr;
+
+    TheBuilder->CreateStore(Val, Variable);
+    return Val; // Assignment returns the value assigned
+  }
   case '+':
     return TheBuilder->CreateFAdd(L, R, "addtmp");
   case '-':
@@ -48,7 +85,7 @@ llvm::Value *BinaryExprAST::codegen() {
 }
 
 llvm::Value *CallExprAST::codegen() {
-  llvm::Function *CalleeF = TheModule->getFunction(Callee);
+  llvm::Function *CalleeF = getFunction(Callee);
   if (!CalleeF) {
     fprintf(stderr, "Unknown function referenced: %s\n", Callee.c_str());
     return nullptr;
@@ -87,10 +124,9 @@ llvm::Function *PrototypeAST::codegen() {
 }
 
 llvm::Function *FunctionAST::codegen() {
-  llvm::Function *TheFunction = TheModule->getFunction(Proto->getName());
-
-  if (!TheFunction)
-    TheFunction = Proto->codegen();
+  auto &P = *Proto;
+  FunctionProtos[P.getName()] = std::move(Proto);
+  llvm::Function *TheFunction = getFunction(P.getName());
 
   if (!TheFunction)
     return nullptr;
@@ -100,14 +136,18 @@ llvm::Function *FunctionAST::codegen() {
   TheBuilder->SetInsertPoint(BB);
 
   NamedValues.clear();
-  for (auto &Arg : TheFunction->args())
-    NamedValues[std::string(Arg.getName())] = &Arg;
+  for (auto &Arg : TheFunction->args()) {
+    llvm::AllocaInst *Alloca =
+        CreateEntryBlockAlloca(TheFunction, std::string(Arg.getName()));
+
+    TheBuilder->CreateStore(&Arg, Alloca);
+
+    NamedValues[std::string(Arg.getName())] = Alloca;
+  }
 
   if (llvm::Value *RetVal = Body->codegen()) {
     TheBuilder->CreateRet(RetVal);
-
     llvm::verifyFunction(*TheFunction);
-
     return TheFunction;
   }
 

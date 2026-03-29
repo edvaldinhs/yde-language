@@ -239,7 +239,13 @@ std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   return nullptr;
 }
 
+std::unique_ptr<PrototypeAST> ParseExtern() {
+  getNextToken();
+  return ParsePrototype();
+}
+
 void SetupPrecedence() {
+  BinopPrecedence['='] = 1;
   BinopPrecedence['<'] = 10;
   BinopPrecedence['+'] = 20;
   BinopPrecedence['-'] = 20;

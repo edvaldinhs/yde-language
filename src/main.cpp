@@ -9,6 +9,13 @@
 #include "llvm/Support/raw_ostream.h"
 #include <iostream>
 
+#include <cstdio>
+
+extern "C" double printd(double X) {
+  fprintf(stderr, "%f\n", X);
+  return 0;
+}
+
 extern std::unique_ptr<llvm::LLVMContext> TheContext;
 extern std::unique_ptr<llvm::Module> TheModule;
 extern std::unique_ptr<llvm::IRBuilder<>> TheBuilder;
@@ -26,6 +33,19 @@ int main() {
 
   auto ExitOnErr = llvm::ExitOnError();
   auto TheJIT = ExitOnErr(llvm::orc::LLJITBuilder().create());
+
+  auto &MJD = TheJIT->getMainJITDylib();
+  auto SymbolMap = llvm::orc::SymbolMap();
+
+  SymbolMap[TheJIT->mangleAndIntern("printd")] = {
+      llvm::orc::ExecutorAddr::fromPtr(&printd),
+      llvm::JITSymbolFlags::Exported};
+
+  ExitOnErr(MJD.define(llvm::orc::absoluteSymbols(std::move(SymbolMap))));
+
+  TheJIT->getMainJITDylib().addGenerator(
+      ExitOnErr(llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+          TheJIT->getDataLayout().getGlobalPrefix())));
 
   std::cout << "Wellcome to Yde compiler!" << std::endl;
   std::cout << ">> ";
@@ -51,16 +71,26 @@ int main() {
       }
       break;
     }
+    case tok_extern: {
+      if (auto ProtoAST = ParseExtern()) {
+        if (auto *FnIR = ProtoAST->codegen()) {
+          std::cout << "Read extern:" << std::endl;
+          FnIR->print(llvm::errs());
+          std::cerr << "\n";
+        }
+      } else {
+        getNextToken();
+      }
+      break;
+    }
     default:
       if (auto FnAST = ParseTopLevelExpr()) {
         if (auto *FnIR = FnAST->codegen()) {
-
           auto TSM = llvm::orc::ThreadSafeModule(std::move(TheModule),
                                                  std::move(TheContext));
           ExitOnErr(TheJIT->addIRModule(std::move(TSM)));
 
           auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
-
           double (*FP)() = ExprSymbol.toPtr<double (*)()>();
 
           fprintf(stderr, "Evaluated to: %f\n", FP());
@@ -76,6 +106,5 @@ int main() {
     }
     std::cout << ">> ";
   }
-
   return 0;
 }
