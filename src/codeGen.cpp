@@ -45,13 +45,7 @@ llvm::Value *VariableExprAST::codegen() {
 }
 
 llvm::Value *BinaryExprAST::codegen() {
-  llvm::Value *L = LHS->codegen();
-  llvm::Value *R = RHS->codegen();
-  if (!L || !R)
-    return nullptr;
-
-  switch (Op) {
-  case '=': {
+  if (Op == '=') {
     VariableExprAST *LHSE = static_cast<VariableExprAST *>(LHS.get());
     if (!LHSE)
       return nullptr;
@@ -65,8 +59,15 @@ llvm::Value *BinaryExprAST::codegen() {
       return nullptr;
 
     TheBuilder->CreateStore(Val, Variable);
-    return Val; // Assignment returns the value assigned
+    return Val;
   }
+
+  llvm::Value *L = LHS->codegen();
+  llvm::Value *R = RHS->codegen();
+  if (!L || !R)
+    return nullptr;
+
+  switch (Op) {
   case '+':
     return TheBuilder->CreateFAdd(L, R, "addtmp");
   case '-':
@@ -75,11 +76,9 @@ llvm::Value *BinaryExprAST::codegen() {
     return TheBuilder->CreateFMul(L, R, "multmp");
   case '<':
     L = TheBuilder->CreateFCmpULT(L, R, "cmptmp");
-    // Convert bool 0/1 to double 0.0 or 1.0
     return TheBuilder->CreateUIToFP(L, llvm::Type::getDoubleTy(*TheContext),
                                     "booltmp");
   default:
-    fprintf(stderr, "invalid binary operator\n");
     return nullptr;
   }
 }
@@ -130,6 +129,9 @@ llvm::Function *FunctionAST::codegen() {
 
   if (!TheFunction)
     return nullptr;
+
+  TheFunction->setLinkage(llvm::Function::ExternalLinkage);
+  TheFunction->setVisibility(llvm::Function::DefaultVisibility);
 
   llvm::BasicBlock *BB =
       llvm::BasicBlock::Create(*TheContext, "entry", TheFunction);
@@ -205,50 +207,44 @@ llvm::Value *ForExprAST::codegen() {
     return nullptr;
 
   llvm::Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
-  llvm::BasicBlock *PreheaderBB = TheBuilder->GetInsertBlock();
+
+  llvm::AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+
+  TheBuilder->CreateStore(StartVal, Alloca);
+
   llvm::BasicBlock *LoopBB =
       llvm::BasicBlock::Create(*TheContext, "loop", TheFunction);
-
   TheBuilder->CreateBr(LoopBB);
   TheBuilder->SetInsertPoint(LoopBB);
 
-  llvm::PHINode *Variable =
-      TheBuilder->CreatePHI(llvm::Type::getDoubleTy(*TheContext), 2, VarName);
-  Variable->addIncoming(StartVal, PreheaderBB);
-
   llvm::Value *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Variable;
+  NamedValues[VarName] = Alloca;
 
   if (!Body->codegen())
     return nullptr;
 
-  llvm::Value *StepVal = nullptr;
-  if (Step) {
-    StepVal = Step->codegen();
-    if (!StepVal)
-      return nullptr;
-  } else {
-    StepVal = llvm::ConstantFP::get(*TheContext, llvm::APFloat(1.0));
-  }
+  llvm::Value *StepVal =
+      Step ? Step->codegen()
+           : llvm::ConstantFP::get(*TheContext, llvm::APFloat(1.0));
+  if (!StepVal)
+    return nullptr;
 
-  llvm::Value *NextVar = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
+  llvm::Value *CurVar =
+      TheBuilder->CreateLoad(Alloca->getAllocatedType(), Alloca, VarName);
+  llvm::Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
+  TheBuilder->CreateStore(NextVar, Alloca);
 
   llvm::Value *EndCond = End->codegen();
   if (!EndCond)
     return nullptr;
-
   EndCond = TheBuilder->CreateFCmpONE(
       EndCond, llvm::ConstantFP::get(*TheContext, llvm::APFloat(0.0)),
       "loopcond");
 
-  llvm::BasicBlock *LoopEndBB = TheBuilder->GetInsertBlock();
   llvm::BasicBlock *AfterBB =
       llvm::BasicBlock::Create(*TheContext, "afterloop", TheFunction);
-
   TheBuilder->CreateCondBr(EndCond, LoopBB, AfterBB);
   TheBuilder->SetInsertPoint(AfterBB);
-
-  Variable->addIncoming(NextVar, LoopEndBB);
 
   if (OldVal)
     NamedValues[VarName] = OldVal;
@@ -256,4 +252,18 @@ llvm::Value *ForExprAST::codegen() {
     NamedValues.erase(VarName);
 
   return llvm::Constant::getNullValue(llvm::Type::getDoubleTy(*TheContext));
+}
+
+llvm::Value *BlockExprAST::codegen() {
+  llvm::Value *LastVal = nullptr;
+  for (auto &E : Expressions) {
+    LastVal = E->codegen();
+    if (!LastVal)
+      return nullptr;
+  }
+
+  if (!LastVal)
+    return llvm::ConstantFP::get(*TheContext, llvm::APFloat(0.0));
+
+  return LastVal;
 }

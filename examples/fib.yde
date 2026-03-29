@@ -1,0 +1,8 @@
+extern printd(x);
+
+fun fib(x)
+  if x < 3 then 1
+  else fib(x-1) + fib(x-2);
+
+fun main()
+  printd(fib(10));

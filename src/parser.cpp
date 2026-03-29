@@ -138,6 +138,29 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
                                       std::move(Step), std::move(Body));
 }
 
+static std::unique_ptr<ExprAST> ParseBlockExpr() {
+  getNextToken();
+  std::vector<std::unique_ptr<ExprAST>> Exprs;
+
+  while (CurTok != '}' && CurTok != tok_eof) {
+    auto E = ParseExpression();
+    if (!E)
+      return nullptr;
+    Exprs.push_back(std::move(E));
+
+    if (CurTok == ';')
+      getNextToken();
+  }
+
+  if (CurTok != '}') {
+    fprintf(stderr, "Expected '}' at end of block\n");
+    return nullptr;
+  }
+
+  getNextToken();
+  return std::make_unique<BlockExprAST>(std::move(Exprs));
+}
+
 /// primary
 ///   ::= identifierexpr
 ///   ::= numberexpr
@@ -154,6 +177,8 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseIfExpr();
   case tok_for:
     return ParseForExpr();
+  case '{':
+    return ParseBlockExpr();
   case '(':
     return ParseParenExpr();
   }
@@ -245,7 +270,8 @@ std::unique_ptr<PrototypeAST> ParseExtern() {
 }
 
 void SetupPrecedence() {
-  BinopPrecedence['='] = 1;
+  // BinopPrecedence[','] = 1;
+  BinopPrecedence['='] = 5;
   BinopPrecedence['<'] = 10;
   BinopPrecedence['+'] = 20;
   BinopPrecedence['-'] = 20;
