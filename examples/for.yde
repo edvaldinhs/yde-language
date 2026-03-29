@@ -1,0 +1,12 @@
+extern printd(x);
+
+fun multiply(x y) {
+  for i = 1, i < y, 1.0 in {
+    x = x + x;
+  };
+  x;
+}
+
+fun main() {
+  printd(multiply(10, 4));
+}

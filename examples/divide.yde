@@ -1,0 +1,22 @@
+extern printd(x);
+
+fun divideiter(x y low high) {
+  if 0 < 1 then {
+    for i = 0, i < 40, 1.0 in {
+      if (((low + high) * 0.5) * y) < x then
+        low = (low + high) * 0.5
+      else
+        high = (low + high) * 0.5;
+    };
+    low
+  } else 0.0
+}
+
+fun divide(x y){
+  divideiter(x, y, 0.0, 1000.0);
+}
+
+fun main() {
+  printd(divide(10.0, 3.0));
+  printd(divide(2, 4));
+}

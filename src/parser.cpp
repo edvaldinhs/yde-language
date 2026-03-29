@@ -95,6 +95,71 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   return std::make_unique<IfExprAST>(std::move(Cond), std::move(Then),
                                      std::move(Else));
 }
+static std::unique_ptr<ExprAST> ParseForExpr() {
+  getNextToken();
+
+  if (CurTok != tok_identifier)
+    return nullptr;
+  std::string IdName = IdentifierStr;
+  getNextToken();
+
+  if (CurTok != '=')
+    return nullptr;
+  getNextToken();
+
+  auto Start = ParseExpression();
+  if (!Start)
+    return nullptr;
+  if (CurTok != ',')
+    return nullptr;
+  getNextToken();
+
+  auto End = ParseExpression();
+  if (!End)
+    return nullptr;
+
+  std::unique_ptr<ExprAST> Step;
+  if (CurTok == ',') {
+    getNextToken();
+    Step = ParseExpression();
+    if (!Step)
+      return nullptr;
+  }
+
+  if (CurTok != tok_in)
+    return nullptr;
+  getNextToken();
+
+  auto Body = ParseExpression();
+  if (!Body)
+    return nullptr;
+
+  return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
+                                      std::move(Step), std::move(Body));
+}
+
+static std::unique_ptr<ExprAST> ParseBlockExpr() {
+  getNextToken();
+  std::vector<std::unique_ptr<ExprAST>> Exprs;
+
+  while (CurTok != '}' && CurTok != tok_eof) {
+    auto E = ParseExpression();
+    if (!E)
+      return nullptr;
+    Exprs.push_back(std::move(E));
+
+    if (CurTok == ';')
+      getNextToken();
+  }
+
+  if (CurTok != '}') {
+    fprintf(stderr, "Expected '}' at end of block\n");
+    return nullptr;
+  }
+
+  getNextToken();
+  return std::make_unique<BlockExprAST>(std::move(Exprs));
+}
 
 /// primary
 ///   ::= identifierexpr
@@ -110,6 +175,10 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseNumberExpr();
   case tok_if:
     return ParseIfExpr();
+  case tok_for:
+    return ParseForExpr();
+  case '{':
+    return ParseBlockExpr();
   case '(':
     return ParseParenExpr();
   }
@@ -195,7 +264,14 @@ std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   return nullptr;
 }
 
+std::unique_ptr<PrototypeAST> ParseExtern() {
+  getNextToken();
+  return ParsePrototype();
+}
+
 void SetupPrecedence() {
+  // BinopPrecedence[','] = 1;
+  BinopPrecedence['='] = 5;
   BinopPrecedence['<'] = 10;
   BinopPrecedence['+'] = 20;
   BinopPrecedence['-'] = 20;
