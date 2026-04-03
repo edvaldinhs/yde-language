@@ -343,6 +343,7 @@ llvm::Value *ForExprAST::codegen() {
     StepVal = Step->codegen();
     if (!StepVal)
       return nullptr;
+    StepVal = EmitCast(StepVal, VarTy);
   } else {
     if (VarTy->isDoubleTy())
       StepVal = llvm::ConstantFP::get(*TheContext, llvm::APFloat(1.0));
