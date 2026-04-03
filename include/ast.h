@@ -4,11 +4,23 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include <llvm/IR/Type.h>
 #include <map>
 
 #include <memory>
 #include <string>
 #include <vector>
+
+enum class TypeKind { Double, Int };
+
+struct VarType {
+  TypeKind Kind;
+};
+
+struct ArgInfo {
+  std::string Name;
+  TypeKind Type;
+};
 
 namespace llvm {
 class Value;
@@ -28,6 +40,30 @@ class NumberExprAST : public ExprAST {
 
 public:
   NumberExprAST(double Val) : Val(Val) {}
+  llvm::Value *codegen() override;
+};
+
+// Expression class for global variables.
+class GlobalVarAST : public ExprAST {
+  std::string Name;
+  TypeKind Ty;
+  double InitVal;
+
+public:
+  GlobalVarAST(const std::string &Name, TypeKind Ty, double InitVal)
+      : Name(Name), Ty(Ty), InitVal(InitVal) {}
+  llvm::Value *codegen() override;
+};
+
+// Expression class for creating variables
+class VarExprAST : public ExprAST {
+  std::string Name;
+  TypeKind Ty;
+  std::unique_ptr<ExprAST> Init;
+
+public:
+  VarExprAST(std::string Name, TypeKind Ty, std::unique_ptr<ExprAST> Init)
+      : Name(std::move(Name)), Ty(std::move(Ty)), Init(std::move(Init)) {}
   llvm::Value *codegen() override;
 };
 
@@ -67,13 +103,19 @@ public:
 
 class PrototypeAST {
   std::string Name;
-  std::vector<std::string> Args;
+  std::vector<ArgInfo> Args;
+  TypeKind RetType;
 
 public:
-  PrototypeAST(const std::string &Name, std::vector<std::string> Args)
-      : Name(Name), Args(std::move(Args)) {}
+  PrototypeAST(const std::string &Name, std::vector<ArgInfo> Args,
+               TypeKind RetType)
+      : Name(Name), Args(std::move(Args)), RetType(RetType) {}
+
   const std::string &getName() const { return Name; }
   llvm::Function *codegen();
+
+  TypeKind getArgType(size_t i) const { return Args[i].Type; }
+  TypeKind getRetType() const { return RetType; }
 };
 
 class FunctionAST {

@@ -28,6 +28,10 @@ int gettok() {
       return tok_for;
     if (IdentifierStr == "in")
       return tok_in;
+    if (IdentifierStr == "int")
+      return tok_int;
+    if (IdentifierStr == "double")
+      return tok_double;
     return tok_identifier;
   }
 

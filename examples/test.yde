@@ -1,0 +1,15 @@
+extern printd(x);
+
+int global = 6;
+
+fun sum(x, y, z) {
+    x+y+z;
+}
+
+fun main() {
+int x = 4;
+y:int = 2;
+int k = sum(x, y, global);
+    printd(k);
+}
+

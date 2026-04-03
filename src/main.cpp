@@ -135,6 +135,12 @@ int main(int argc, char **argv) {
         ProtoAST->codegen();
       }
       break;
+    case tok_int:
+    case tok_double:
+      if (auto GlobalAST = ParseGlobal()) {
+        GlobalAST->codegen();
+      }
+      break;
     default:
       if (auto FnAST = ParseTopLevelExpr()) {
         FnAST->codegen();
