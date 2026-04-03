@@ -14,23 +14,23 @@ int gettok() {
     while (isalnum((LastChar = getchar())))
       IdentifierStr += LastChar;
 
-    if (IdentifierStr == "fun")
+    if (IdentifierStr == "when")
       return tok_def;
-    if (IdentifierStr == "extern")
+    if (IdentifierStr == "forget")
       return tok_extern;
-    if (IdentifierStr == "if")
+    if (IdentifierStr == "and")
       return tok_if;
-    if (IdentifierStr == "then")
+    if (IdentifierStr == "you")
       return tok_then;
-    if (IdentifierStr == "else")
+    if (IdentifierStr == "still")
       return tok_else;
-    if (IdentifierStr == "for")
+    if (IdentifierStr == "why")
       return tok_for;
-    if (IdentifierStr == "in")
+    if (IdentifierStr == "love")
       return tok_in;
-    if (IdentifierStr == "int")
+    if (IdentifierStr == "me")
       return tok_int;
-    if (IdentifierStr == "double")
+    if (IdentifierStr == "us")
       return tok_double;
     return tok_identifier;
   }
