@@ -1,7 +1,7 @@
 extern printd(x);
 
-fun multiply(x y) {
-  for i = 1, i < y, 1.0 in {
+fun multiply(x, y) {
+  for i = 1, i < y, 1 in {
     x = x + x;
   };
   x;

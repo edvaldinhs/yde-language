@@ -1,4 +1,5 @@
 #include "../include/parser.h"
+#include <memory>
 
 extern std::unique_ptr<llvm::LLVMContext> TheContext;
 extern std::unique_ptr<llvm::Module> TheModule;
@@ -24,9 +25,33 @@ static int GetTokPrecedence() {
 }
 
 // --- Logic for Primary Expressions ---
+static TypeKind ParseType() {
+  if (CurTok == tok_int) {
+    getNextToken();
+    return TypeKind::Int;
+  }
+  if (CurTok == tok_double) {
+    getNextToken();
+    return TypeKind::Double;
+  }
+  return TypeKind::Double;
+}
+
 static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   std::string IdName = IdentifierStr;
   getNextToken();
+
+  if (CurTok == ':') {
+    getNextToken();
+    TypeKind Ty = ParseType();
+
+    std::unique_ptr<ExprAST> Init;
+    if (CurTok == '=') {
+      getNextToken();
+      Init = ParseExpression();
+    }
+    return std::make_unique<VarExprAST>(IdName, Ty, std::move(Init));
+  }
 
   if (CurTok != '(')
     return std::make_unique<VariableExprAST>(IdName);
@@ -51,10 +76,56 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   return std::make_unique<CallExprAST>(IdName, std::move(Args));
 }
 
+std::unique_ptr<GlobalVarAST> ParseGlobal() {
+  TypeKind Ty = (CurTok == tok_int) ? TypeKind::Int : TypeKind::Double;
+  getNextToken();
+
+  if (CurTok != tok_identifier)
+    return nullptr;
+
+  std::string Name = IdentifierStr;
+  getNextToken();
+
+  double Val = 0;
+  if (CurTok == '=') {
+    getNextToken();
+    if (CurTok == tok_number) {
+      Val = NumVal;
+      getNextToken();
+    }
+  }
+
+  if (CurTok == ';')
+    getNextToken();
+
+  return std::make_unique<GlobalVarAST>(Name, Ty, Val);
+}
+
 static std::unique_ptr<ExprAST> ParseNumberExpr() {
   auto Result = std::make_unique<NumberExprAST>(NumVal);
   getNextToken();
   return std::move(Result);
+}
+
+static std::unique_ptr<ExprAST> ParseVarExpr() {
+  TypeKind Ty = (CurTok == tok_int) ? TypeKind::Int : TypeKind::Double;
+  getNextToken();
+
+  if (CurTok != tok_identifier)
+    return LogError("expected identifier after type");
+
+  std::string Name = IdentifierStr;
+  getNextToken();
+
+  std::unique_ptr<ExprAST> Init;
+  if (CurTok == '=') {
+    getNextToken();
+    Init = ParseExpression();
+    if (!Init)
+      return nullptr;
+  }
+
+  return std::make_unique<VarExprAST>(Name, Ty, std::move(Init));
 }
 
 static std::unique_ptr<ExprAST> ParseParenExpr() {
@@ -177,6 +248,9 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseIfExpr();
   case tok_for:
     return ParseForExpr();
+  case tok_int:
+  case tok_double:
+    return ParseVarExpr();
   case '{':
     return ParseBlockExpr();
   case '(':
@@ -222,26 +296,74 @@ std::unique_ptr<ExprAST> ParseExpression() {
   return ParseBinOpRHS(0, std::move(LHS));
 }
 
+static ArgInfo ParseArgument() {
+  TypeKind SelectedType = TypeKind::Double;
+  std::string SelectedName;
+
+  if (CurTok == tok_int || CurTok == tok_double) {
+    SelectedType = (CurTok == tok_int) ? TypeKind::Int : TypeKind::Double;
+    getNextToken();
+
+    if (CurTok != tok_identifier)
+      return {};
+    SelectedName = IdentifierStr;
+    getNextToken();
+  } else if (CurTok == tok_identifier) {
+    SelectedName = IdentifierStr;
+    getNextToken();
+
+    if (CurTok == ':') {
+      getNextToken();
+      if (CurTok == tok_int)
+        SelectedType = TypeKind::Int;
+      else if (CurTok == tok_double)
+        SelectedType = TypeKind::Double;
+      getNextToken();
+    }
+  }
+
+  return {SelectedName, SelectedType};
+}
+
 // --- Logic for Functions/Prototypes ---
 static std::unique_ptr<PrototypeAST> ParsePrototype() {
+  TypeKind RetType = TypeKind::Double;
+  std::string FnName;
+
+  if (CurTok == tok_int || CurTok == tok_double) {
+    RetType = (CurTok == tok_int) ? TypeKind::Int : TypeKind::Double;
+    getNextToken();
+  }
+
   if (CurTok != tok_identifier)
     return nullptr;
 
-  std::string FnName = IdentifierStr;
+  FnName = IdentifierStr;
   getNextToken();
 
   if (CurTok != '(')
     return nullptr;
 
-  std::vector<std::string> ArgNames;
-  while (getNextToken() == tok_identifier)
-    ArgNames.push_back(IdentifierStr);
-
-  if (CurTok != ')')
-    return nullptr;
-
   getNextToken();
-  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+
+  std::vector<ArgInfo> Args;
+  if (CurTok != ')') {
+    while (true) {
+      auto Arg = ParseArgument();
+      if (Arg.Name.empty())
+        return nullptr;
+      Args.push_back(Arg);
+
+      if (CurTok == ')')
+        break;
+      if (CurTok != ',')
+        return nullptr;
+      getNextToken();
+    }
+  }
+  getNextToken();
+
+  return std::make_unique<PrototypeAST>(FnName, std::move(Args), RetType);
 }
 
 std::unique_ptr<FunctionAST> ParseDefinition() {
@@ -257,8 +379,9 @@ std::unique_ptr<FunctionAST> ParseDefinition() {
 
 std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   if (auto E = ParseExpression()) {
-    auto Proto = std::make_unique<PrototypeAST>("__anon_expr",
-                                                std::vector<std::string>());
+    std::vector<ArgInfo> EmptyArgs;
+    auto Proto = std::make_unique<PrototypeAST>(
+        "__anon_expr", std::move(EmptyArgs), TypeKind::Double);
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
   return nullptr;
