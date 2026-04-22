@@ -37,6 +37,16 @@ A custom-built compiler for an original programming language currently in develo
 
 You will need to download llvm libs before building the project...
 
+### Ubuntu
+```bash
+$ sudo apt install llvm-dev libclang-dev
+```
+
+### Arch
+```bash
+$ sudo pacman -S llvm
+```
+
 Clone the project and access the project folder:
 
 ```bash
