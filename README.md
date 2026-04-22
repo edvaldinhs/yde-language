@@ -47,6 +47,7 @@ $ sudo apt install llvm-dev libclang-dev
 $ sudo pacman -S llvm
 ```
 
+### Build
 Clone the project and access the project folder:
 
 ```bash
