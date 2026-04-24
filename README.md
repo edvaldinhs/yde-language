@@ -51,7 +51,7 @@ $ sudo pacman -S llvm
 Clone the project and access the project folder:
 
 ```bash
-$ git clone https://github.com/edvaldinhs/yde-language
+$ git clone https://github.com/edvaldinhs/yde-language.git
 $ cd yde-language
 ```
 
