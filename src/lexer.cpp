@@ -74,12 +74,35 @@ int gettok() {
 
   if (LastChar == '"') {
     IdentifierStr = "";
-    LastChar = getchar();
-    while (LastChar != '"' && LastChar != EOF) {
-      IdentifierStr += LastChar;
+    while (true) {
       LastChar = getchar();
+      CurCol++;
+
+      if (LastChar == EOF)
+        break;
+
+      if (LastChar == '"') {
+        break;
+      }
+
+      if (LastChar == '\\') {
+        IdentifierStr += LastChar;
+
+        LastChar = getchar();
+        CurCol++;
+        if (LastChar == EOF)
+          break;
+
+        IdentifierStr += LastChar;
+      } else {
+        IdentifierStr += LastChar;
+      }
     }
-    LastChar = getchar();
+
+    if (LastChar == '"') {
+      LastChar = getchar();
+      CurCol++;
+    }
     return tok_string;
   }
 

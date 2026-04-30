@@ -95,6 +95,50 @@ static llvm::AllocaInst *CreateEntryBlockAlloca(llvm::Function *TheFunction,
   return TmpB.CreateAlloca(Ty, nullptr, VarName);
 }
 
+llvm::FunctionCallee GetMalloc() {
+  return TheModule->getOrInsertFunction("malloc",
+                                        llvm::PointerType::get(*TheContext, 0),
+                                        llvm::Type::getInt64Ty(*TheContext));
+}
+
+llvm::FunctionCallee GetFree() {
+  return TheModule->getOrInsertFunction("free",
+                                        llvm::Type::getVoidTy(*TheContext),
+                                        llvm::PointerType::get(*TheContext, 0));
+}
+
+std::string ProcessEscapeSequences(const std::string &input) {
+  std::string unescaped;
+  for (size_t i = 0; i < input.size(); ++i) {
+    if (input[i] == '\\' && i + 1 < input.size()) {
+      switch (input[i + 1]) {
+      case 'n':
+        unescaped += '\n';
+        break;
+      case 't':
+        unescaped += '\t';
+        break;
+      case 'r':
+        unescaped += '\r';
+        break;
+      case '\\':
+        unescaped += '\\';
+        break;
+      case '\"':
+        unescaped += '\"';
+        break;
+      default:
+        unescaped += input[i + 1];
+        break;
+      }
+      i++;
+    } else {
+      unescaped += input[i];
+    }
+  }
+  return unescaped;
+}
+
 MyType VariableExprAST::getType() {
   if (NamedValues.count(Name))
     return NamedValues[Name].Type;
@@ -221,109 +265,126 @@ MyType BinaryExprAST::getType() {
 
   MyType L = LHS->getType();
   MyType R = RHS->getType();
+
+  if (Op == '+') {
+    if (L.PointerLevel > 0 || R.PointerLevel > 0) {
+      MyType StrTy(TypeCategory::Int);
+      StrTy.PointerLevel = 1;
+      return StrTy;
+    }
+  }
   if (L.Category == TypeCategory::Double || R.Category == TypeCategory::Double)
     return MyType(TypeCategory::Double);
   return L;
 }
 
-llvm::Value *BinaryExprAST::codegen() {
-  if (auto *V = dynamic_cast<VariableExprAST *>(LHS.get())) {
-  } else if (auto *B = dynamic_cast<BinaryExprAST *>(LHS.get())) {
-  }
-  if (Op == '=') {
-    if (auto *U = dynamic_cast<UnaryExprAST *>(LHS.get())) {
-    } else if (auto *B = dynamic_cast<BinaryExprAST *>(LHS.get())) {
-    } else if (auto *V = dynamic_cast<VariableExprAST *>(LHS.get())) {
-    }
+llvm::Value *GenerateStrLen(llvm::Value *StrPtr) {
+  llvm::Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
-    llvm::Value *LHSAddr = LHS->getLValue();
-    if (!LHSAddr) {
-      return LogErrorV("Destination of '=' must be an L-Value (Cannot assign "
-                       "to this expression)");
-    }
+  llvm::BasicBlock *EntryBB = TheBuilder->GetInsertBlock();
+  llvm::BasicBlock *LoopBB =
+      llvm::BasicBlock::Create(*TheContext, "strlen.loop", TheFunction);
+  llvm::BasicBlock *EndBB =
+      llvm::BasicBlock::Create(*TheContext, "strlen.end", TheFunction);
 
-    llvm::Value *Val = RHS->codegen();
-    if (!Val) {
-      return nullptr;
-    }
+  TheBuilder->CreateBr(LoopBB);
+  TheBuilder->SetInsertPoint(LoopBB);
 
-    Val = EmitCast(Val, getLLVMType(LHS->getType()));
-    TheBuilder->CreateStore(Val, LHSAddr);
+  llvm::PHINode *Idx =
+      TheBuilder->CreatePHI(llvm::Type::getInt64Ty(*TheContext), 2, "idx");
+  Idx->addIncoming(
+      llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), 0), EntryBB);
 
-    return Val;
-  }
+  llvm::Value *CharAddr = TheBuilder->CreateInBoundsGEP(
+      llvm::Type::getInt8Ty(*TheContext), StrPtr, Idx, "charaddr");
+  llvm::Value *Char = TheBuilder->CreateLoad(llvm::Type::getInt8Ty(*TheContext),
+                                             CharAddr, "char");
 
-  if (Op == '.') {
-    llvm::Value *Ptr = this->getLValue();
-    if (!Ptr)
-      return nullptr;
-    return TheBuilder->CreateLoad(getLLVMType(getType()), Ptr, "structtmp");
-  }
+  llvm::Value *IsEnd = TheBuilder->CreateICmpEQ(
+      Char, llvm::ConstantInt::get(llvm::Type::getInt8Ty(*TheContext), 0),
+      "isend");
 
-  llvm::Value *L = LHS->codegen();
-  llvm::Value *R = RHS->codegen();
-  if (!L || !R)
-    return nullptr;
+  llvm::Value *NextIdx = TheBuilder->CreateAdd(
+      Idx, llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), 1),
+      "nextidx");
+  Idx->addIncoming(NextIdx, LoopBB);
 
-  llvm::Type *CommonTy = L->getType();
-  if (R->getType()->isDoubleTy())
-    CommonTy = R->getType();
+  TheBuilder->CreateCondBr(IsEnd, EndBB, LoopBB);
 
-  L = EmitCast(L, CommonTy);
-  R = EmitCast(R, CommonTy);
-
-  bool isDouble = CommonTy->isDoubleTy();
-
-  switch (Op) {
-  case '+':
-    return isDouble ? TheBuilder->CreateFAdd(L, R, "addtmp")
-                    : TheBuilder->CreateAdd(L, R, "addtmp");
-  case '-':
-    return isDouble ? TheBuilder->CreateFSub(L, R, "subtmp")
-                    : TheBuilder->CreateSub(L, R, "subtmp");
-  case '*':
-    return isDouble ? TheBuilder->CreateFMul(L, R, "multmp")
-                    : TheBuilder->CreateMul(L, R, "multmp");
-  case '<':
-    if (isDouble) {
-      L = TheBuilder->CreateFCmpULT(L, R, "cmptmp");
-      return TheBuilder->CreateUIToFP(L, llvm::Type::getDoubleTy(*TheContext),
-                                      "booltmp");
-    } else {
-      L = TheBuilder->CreateICmpSLT(L, R, "cmptmp");
-      return TheBuilder->CreateZExt(L, llvm::Type::getInt32Ty(*TheContext),
-                                    "booltmp");
-    }
-  default:
-    return nullptr;
-  }
+  TheBuilder->SetInsertPoint(EndBB);
+  return Idx;
 }
 
-MyType MemberAccessExprAST::getType() {
-  MyType BaseTy = StructExpr->getType();
-  auto &SInfo = StructDefs[BaseTy.Name];
-  for (auto &m : SInfo.Members) {
-    if (m.first == MemberName)
-      return m.second;
-  }
-  return MyType(TypeCategory::Double);
-}
+llvm::Value *GenerateStrCat(llvm::Value *L, llvm::Value *R) {
+  llvm::Function *F = TheBuilder->GetInsertBlock()->getParent();
+  llvm::Type *Int8Ty = llvm::Type::getInt8Ty(*TheContext);
+  llvm::Type *Int64Ty = llvm::Type::getInt64Ty(*TheContext);
 
-llvm::Value *MemberAccessExprAST::getLValue() {
-  llvm::Value *StructPtr = StructExpr->getLValue();
-  if (!StructPtr)
-    return nullptr;
+  llvm::Value *LenL = GenerateStrLen(L);
+  llvm::Value *LenR = GenerateStrLen(R);
+  llvm::Value *TotalLen = TheBuilder->CreateAdd(LenL, LenR);
+  llvm::Value *AllocLen = TheBuilder->CreateAdd(
+      TotalLen, llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), 1));
 
-  MyType BaseTy = StructExpr->getType();
-  if (BaseTy.Category != TypeCategory::Struct)
-    return nullptr;
+  llvm::Value *NewStr =
+      TheBuilder->CreateCall(GetMalloc(), {AllocLen}, "str_heap");
 
-  llvm::StructType *STy = StructTypeMap[BaseTy.Name];
-  if (!STy)
-    return nullptr;
+  llvm::BasicBlock *CopyLBB = llvm::BasicBlock::Create(*TheContext, "copyl", F);
+  llvm::BasicBlock *CopyLCheckBB =
+      llvm::BasicBlock::Create(*TheContext, "copyl_chk", F);
+  llvm::BasicBlock *CopyRBB = llvm::BasicBlock::Create(*TheContext, "copyr", F);
+  llvm::BasicBlock *CopyRCheckBB =
+      llvm::BasicBlock::Create(*TheContext, "copyr_chk", F);
+  llvm::BasicBlock *EndBB =
+      llvm::BasicBlock::Create(*TheContext, "strcat_end", F);
 
-  unsigned Index = StructDefs[BaseTy.Name].MemberIndex[MemberName];
-  return TheBuilder->CreateStructGEP(STy, StructPtr, Index);
+  TheBuilder->CreateBr(CopyLCheckBB);
+  TheBuilder->SetInsertPoint(CopyLCheckBB);
+  llvm::PHINode *IdxL = TheBuilder->CreatePHI(Int64Ty, 2, "idx_l");
+  IdxL->addIncoming(llvm::ConstantInt::get(Int64Ty, 0),
+                    TheBuilder->GetInsertBlock()->getSinglePredecessor());
+
+  llvm::Value *CondL = TheBuilder->CreateICmpSLT(IdxL, LenL);
+  TheBuilder->CreateCondBr(CondL, CopyLBB, CopyRCheckBB);
+
+  TheBuilder->SetInsertPoint(CopyLBB);
+  llvm::Value *SrcPtrL = TheBuilder->CreateInBoundsGEP(Int8Ty, L, IdxL);
+  llvm::Value *DstPtrL = TheBuilder->CreateInBoundsGEP(Int8Ty, NewStr, IdxL);
+  TheBuilder->CreateStore(TheBuilder->CreateLoad(Int8Ty, SrcPtrL), DstPtrL);
+
+  llvm::Value *NextIdxL =
+      TheBuilder->CreateAdd(IdxL, llvm::ConstantInt::get(Int64Ty, 1));
+  IdxL->addIncoming(NextIdxL, CopyLBB);
+  TheBuilder->CreateBr(CopyLCheckBB);
+
+  TheBuilder->SetInsertPoint(CopyRCheckBB);
+  llvm::PHINode *IdxR = TheBuilder->CreatePHI(Int64Ty, 2, "idx_r");
+  IdxR->addIncoming(llvm::ConstantInt::get(Int64Ty, 0), CopyLCheckBB);
+
+  llvm::Value *CondR = TheBuilder->CreateICmpSLT(IdxR, LenR);
+  TheBuilder->CreateCondBr(CondR, CopyRBB, EndBB);
+
+  TheBuilder->SetInsertPoint(CopyRBB);
+  llvm::Value *SrcPtrR = TheBuilder->CreateInBoundsGEP(Int8Ty, R, IdxR);
+
+  llvm::Value *DstOffset = TheBuilder->CreateAdd(LenL, IdxR);
+  llvm::Value *DstPtrR =
+      TheBuilder->CreateInBoundsGEP(Int8Ty, NewStr, DstOffset);
+
+  TheBuilder->CreateStore(TheBuilder->CreateLoad(Int8Ty, SrcPtrR), DstPtrR);
+
+  llvm::Value *NextIdxR =
+      TheBuilder->CreateAdd(IdxR, llvm::ConstantInt::get(Int64Ty, 1));
+  IdxR->addIncoming(NextIdxR, CopyRBB);
+  TheBuilder->CreateBr(CopyRCheckBB);
+
+  // --- End ---
+  TheBuilder->SetInsertPoint(EndBB);
+  llvm::Value *NullPtr =
+      TheBuilder->CreateInBoundsGEP(Int8Ty, NewStr, TotalLen);
+  TheBuilder->CreateStore(llvm::ConstantInt::get(Int8Ty, 0), NullPtr);
+
+  return NewStr;
 }
 
 std::pair<llvm::Value *, llvm::Value *> GenerateItoa(llvm::Value *Val) {
@@ -436,6 +497,165 @@ std::pair<llvm::Value *, llvm::Value *> GenerateItoa(llvm::Value *Val) {
   return {StrPtr, Len};
 }
 
+llvm::Value *GenerateFtoa(llvm::Value *Val) {
+  llvm::Type *DoubleTy = llvm::Type::getDoubleTy(*TheContext);
+  llvm::Type *Int64Ty = llvm::Type::getInt64Ty(*TheContext);
+
+  llvm::Value *IntPart = TheBuilder->CreateFPToSI(Val, Int64Ty);
+  llvm::Value *IntPartD = TheBuilder->CreateSIToFP(IntPart, DoubleTy);
+  llvm::Value *Fract = TheBuilder->CreateFSub(Val, IntPartD);
+
+  llvm::Value *AbsFract = TheBuilder->CreateSelect(
+      TheBuilder->CreateFCmpOLT(Fract, llvm::ConstantFP::get(DoubleTy, 0.0)),
+      TheBuilder->CreateFNeg(Fract), Fract);
+
+  llvm::Value *ScaledFract = TheBuilder->CreateFMul(
+      AbsFract, llvm::ConstantFP::get(DoubleTy, 1000000.0));
+  llvm::Value *FractPart = TheBuilder->CreateFPToSI(ScaledFract, Int64Ty);
+
+  auto [IntStr, IntLen] = GenerateItoa(
+      TheBuilder->CreateTrunc(IntPart, llvm::Type::getInt32Ty(*TheContext)));
+  auto [FractStr, FractLen] = GenerateItoa(
+      TheBuilder->CreateTrunc(FractPart, llvm::Type::getInt32Ty(*TheContext)));
+
+  llvm::Value *Dot = TheBuilder->CreateGlobalString(".");
+  llvm::Value *WithDot = GenerateStrCat(IntStr, Dot);
+  llvm::Value *FinalStr = GenerateStrCat(WithDot, FractStr);
+
+  return FinalStr;
+}
+
+llvm::Value *BinaryExprAST::codegen() {
+  if (auto *V = dynamic_cast<VariableExprAST *>(LHS.get())) {
+  } else if (auto *B = dynamic_cast<BinaryExprAST *>(LHS.get())) {
+  }
+  if (Op == '=') {
+    if (auto *U = dynamic_cast<UnaryExprAST *>(LHS.get())) {
+    } else if (auto *B = dynamic_cast<BinaryExprAST *>(LHS.get())) {
+    } else if (auto *V = dynamic_cast<VariableExprAST *>(LHS.get())) {
+    }
+
+    llvm::Value *LHSAddr = LHS->getLValue();
+    if (!LHSAddr) {
+      return LogErrorV("Destination of '=' must be an L-Value (Cannot assign "
+                       "to this expression)");
+    }
+
+    llvm::Value *Val = RHS->codegen();
+    if (!Val) {
+      return nullptr;
+    }
+
+    Val = EmitCast(Val, getLLVMType(LHS->getType()));
+    TheBuilder->CreateStore(Val, LHSAddr);
+
+    return Val;
+  }
+
+  if (Op == '.') {
+    llvm::Value *Ptr = this->getLValue();
+    if (!Ptr)
+      return nullptr;
+    return TheBuilder->CreateLoad(getLLVMType(getType()), Ptr, "structtmp");
+  }
+
+  llvm::Value *L = LHS->codegen();
+  llvm::Value *R = RHS->codegen();
+  if (!L || !R)
+    return nullptr;
+
+  if (Op == '+') {
+    llvm::Type *LTy = L->getType();
+    llvm::Type *RTy = R->getType();
+
+    bool LIsPtr = LTy->isPointerTy();
+    bool RIsPtr = RTy->isPointerTy();
+
+    if (LIsPtr || RIsPtr) {
+      llvm::Value *LFinal = L;
+      llvm::Value *RFinal = R;
+
+      if (!LIsPtr) {
+        if (LTy->isDoubleTy())
+          LFinal = GenerateFtoa(L);
+        else
+          LFinal = std::get<0>(GenerateItoa(
+              TheBuilder->CreateTrunc(L, llvm::Type::getInt32Ty(*TheContext))));
+      }
+
+      if (!RIsPtr) {
+        if (RTy->isDoubleTy())
+          RFinal = GenerateFtoa(R);
+        else
+          RFinal = std::get<0>(GenerateItoa(
+              TheBuilder->CreateTrunc(R, llvm::Type::getInt32Ty(*TheContext))));
+      }
+
+      return GenerateStrCat(LFinal, RFinal);
+    }
+  }
+
+  llvm::Type *CommonTy = L->getType();
+  if (R->getType()->isDoubleTy())
+    CommonTy = R->getType();
+
+  L = EmitCast(L, CommonTy);
+  R = EmitCast(R, CommonTy);
+
+  bool isDouble = CommonTy->isDoubleTy();
+
+  switch (Op) {
+  case '+':
+    return isDouble ? TheBuilder->CreateFAdd(L, R, "addtmp")
+                    : TheBuilder->CreateAdd(L, R, "addtmp");
+  case '-':
+    return isDouble ? TheBuilder->CreateFSub(L, R, "subtmp")
+                    : TheBuilder->CreateSub(L, R, "subtmp");
+  case '*':
+    return isDouble ? TheBuilder->CreateFMul(L, R, "multmp")
+                    : TheBuilder->CreateMul(L, R, "multmp");
+  case '<':
+    if (isDouble) {
+      L = TheBuilder->CreateFCmpULT(L, R, "cmptmp");
+      return TheBuilder->CreateUIToFP(L, llvm::Type::getDoubleTy(*TheContext),
+                                      "booltmp");
+    } else {
+      L = TheBuilder->CreateICmpSLT(L, R, "cmptmp");
+      return TheBuilder->CreateZExt(L, llvm::Type::getInt32Ty(*TheContext),
+                                    "booltmp");
+    }
+  default:
+    return nullptr;
+  }
+}
+
+MyType MemberAccessExprAST::getType() {
+  MyType BaseTy = StructExpr->getType();
+  auto &SInfo = StructDefs[BaseTy.Name];
+  for (auto &m : SInfo.Members) {
+    if (m.first == MemberName)
+      return m.second;
+  }
+  return MyType(TypeCategory::Double);
+}
+
+llvm::Value *MemberAccessExprAST::getLValue() {
+  llvm::Value *StructPtr = StructExpr->getLValue();
+  if (!StructPtr)
+    return nullptr;
+
+  MyType BaseTy = StructExpr->getType();
+  if (BaseTy.Category != TypeCategory::Struct)
+    return nullptr;
+
+  llvm::StructType *STy = StructTypeMap[BaseTy.Name];
+  if (!STy)
+    return nullptr;
+
+  unsigned Index = StructDefs[BaseTy.Name].MemberIndex[MemberName];
+  return TheBuilder->CreateStructGEP(STy, StructPtr, Index);
+}
+
 llvm::Value *MemberAccessExprAST::codegen() {
   llvm::Value *Ptr = this->getLValue();
   if (!Ptr)
@@ -458,7 +678,8 @@ llvm::Value *NumberExprAST::codegen() {
 }
 
 llvm::Value *StringExprAST::codegen() {
-  return TheBuilder->CreateGlobalString(Val);
+  std::string LetHimCook = ProcessEscapeSequences(Val);
+  return TheBuilder->CreateGlobalString(LetHimCook);
 }
 
 llvm::Value *GlobalVarAST::codegen() {
@@ -493,43 +714,6 @@ llvm::Value *VarExprAST::codegen() {
 
   NamedValues[Name] = {Alloca, MyType(Ty)};
   return Alloca;
-}
-
-llvm::Value *GenerateStrLen(llvm::Value *StrPtr) {
-  llvm::Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
-
-  llvm::BasicBlock *EntryBB = TheBuilder->GetInsertBlock();
-  llvm::BasicBlock *LoopBB =
-      llvm::BasicBlock::Create(*TheContext, "strlen.loop", TheFunction);
-  llvm::BasicBlock *EndBB =
-      llvm::BasicBlock::Create(*TheContext, "strlen.end", TheFunction);
-
-  TheBuilder->CreateBr(LoopBB);
-  TheBuilder->SetInsertPoint(LoopBB);
-
-  llvm::PHINode *Idx =
-      TheBuilder->CreatePHI(llvm::Type::getInt64Ty(*TheContext), 2, "idx");
-  Idx->addIncoming(
-      llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), 0), EntryBB);
-
-  llvm::Value *CharAddr = TheBuilder->CreateInBoundsGEP(
-      llvm::Type::getInt8Ty(*TheContext), StrPtr, Idx, "charaddr");
-  llvm::Value *Char = TheBuilder->CreateLoad(llvm::Type::getInt8Ty(*TheContext),
-                                             CharAddr, "char");
-
-  llvm::Value *IsEnd = TheBuilder->CreateICmpEQ(
-      Char, llvm::ConstantInt::get(llvm::Type::getInt8Ty(*TheContext), 0),
-      "isend");
-
-  llvm::Value *NextIdx = TheBuilder->CreateAdd(
-      Idx, llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), 1),
-      "nextidx");
-  Idx->addIncoming(NextIdx, LoopBB);
-
-  TheBuilder->CreateCondBr(IsEnd, EndBB, LoopBB);
-
-  TheBuilder->SetInsertPoint(EndBB);
-  return Idx;
 }
 
 llvm::Value *GeneratePrintSyscall(llvm::Value *StrPtr, llvm::Value *Len) {
@@ -621,6 +805,11 @@ llvm::Value *CallExprAST::codegen() {
     llvm::Value *LastSyscallResult = nullptr;
 
     for (unsigned i = 0, e = Args.size(); i != e; ++i) {
+      bool isTemporary =
+          (dynamic_cast<BinaryExprAST *>(Args[i].get()) != nullptr ||
+           Args[i]->getType().Category == TypeCategory::Double ||
+           Args[i]->getType().Category == TypeCategory::Int);
+
       llvm::Value *ArgV = Args[i]->codegen();
       if (!ArgV)
         return nullptr;
@@ -639,6 +828,9 @@ llvm::Value *CallExprAST::codegen() {
         GeneratePrintDouble(ArgV);
         LastSyscallResult =
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), 0);
+        if (isTemporary && ArgV->getType()->isPointerTy()) {
+          TheBuilder->CreateCall(GetFree(), {ArgV});
+        }
       }
     }
     return LastSyscallResult
