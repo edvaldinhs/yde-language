@@ -1,13 +1,29 @@
+# Here's how we can use strings by now.
+
 fun main() {
-    int x = -20;
-    print(x);
-    print(" ");
 
-    double k = 4.0;
-    print(k);
-    print(" ");
-
-    char* message = "Hello World!";
+    # We use strings as a char pointer.
+    char* message = "Hello World!\n\n";
     print(message);
+
+    # But chars are still treated like
+    # 8 bit (1 byte) ints.
+    char x = "2";
+    print(x + " != " + 2 + "\n");
+    # Also, we can concat vars, values
+    # and strings...
+
+    # Works with doubles too!
+    print("Pi: " + 3.14 + "\n");
+    print("\n");
+
+    # Even negative integers
+    int x = -20;
+    print(x + "\n");
+
+    # Negative doubles;
+    double k = -4.0;
+    print(k + "\n");
     0;
 }
+
